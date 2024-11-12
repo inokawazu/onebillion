@@ -6,17 +6,35 @@ const ST{G} = Series{Number,Tuple{Mean{G,EqualWeight},Variance{G,G,EqualWeight}}
     return Series(Mean(T), Variance(T))
 end
 
+function csvstream(io, stringtype=String, numbertype=Float64, delim=';', endline='\n', chunk_size=1000000)
+    # readuntil(stream::IO, delim; keep::Bool = false)
+    Channel() do ch
+        while !eof(io)
+            city = stringtype[]
+            temperature = numbertype[]
+            sizehint!(city, chunk_size)
+            sizehint!(temperature, chunk_size)
+            for _ in 1:chunk_size
+                eof(io) && break
+                push!(city, readuntil(io, delim))
+                push!(temperature, parse(numbertype, readuntil(io, endline)))
+            end
+            put!(ch, (city=city, temperature=temperature))
+        end
+    end
+end
+
 function (@main)(_)
 
     # rows = CSV.Chunks("mystats.csv"; header=[:city, :temperature], delim=';', types=[String, Float64])
-    chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=[String, Float64],
-        ntasks=1000)
-
+    # chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=[String, Float64], ntasks=1000)
 
     ch = Channel(Threads.nthreads()) do c
-        foreach(chunk -> put!(c, chunk), chunks)
-        while true
-            put!(c, nothing)
+        open("mystats.csv") do io
+            foreach(chunk -> put!(c, chunk), csvstream(io))
+            while true
+                put!(c, nothing)
+            end
         end
     end
 
@@ -28,7 +46,7 @@ function (@main)(_)
                 isnothing(chunk) && break
 
                 df = DataFrame(chunk)
-                # @info "Chuck Data" size=nrow(df)
+                @info "Chuck Data" thread=Threads.threadid() size=nrow(df)
 
                 for gdf in groupby(df, :city)
                     city = first(gdf.city)
