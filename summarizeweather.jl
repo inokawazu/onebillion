@@ -8,37 +8,34 @@ end
 
 function (@main)(_)
 
-    #     rows = CSV.Rows("mystats.csv"; reusebuffer = true, header=[:city, :temperature], delim=';', types=[Symbol, Float64])
-    #     o = GroupBy(Symbol, newstats(Float64))
-    #     fit!(o, (city => temperature for (; city, temperature) in rows))
-
-    chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=String, ntasks=1000)
-    # chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=[String, Float64], ntasks=1000)
+    chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=[String, String], ntasks=1000)
 
     ch = Channel(Threads.nthreads()) do c
         for chunk in chunks
             put!(c, chunk)
         end
-
         while true
             put!(c, nothing)
         end
     end
 
-    tsks = map(1:Threads.nthreads()) do _
+    chunk_count = Threads.Atomic{Int}(0)
+
+    tsks = map(1:max(Threads.nthreads() - 1, 1)) do _
         Threads.@spawn begin
             records = Dict{String,ST{Float64}}()
-            # records = GroupBy(Symbol, newstats(Float64))
+            # records = GroupBy(String, newstats(Float64))
             while true
                 chunk = take!(ch)
                 isnothing(chunk) && break
+                cn = Threads.atomic_add!(chunk_count, 1)
 
                 df = DataFrame(
-                    (city=city, temperature=parse(Float64, temperature))
+                    (city=string(city), temperature=parse(Float64, temperature))
                     for (; city, temperature) in chunk
                 )
 
-                @info "Chunk Data" thread = Threads.threadid() size = nrow(df)
+                @info "Chunk Data" nrows = length(chunk) chunk_number=cn thread = Threads.threadid()
 
                 for gdf in groupby(df, :city)
                     city = first(gdf.city)
