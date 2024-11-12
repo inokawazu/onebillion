@@ -1,54 +1,54 @@
-using CSV, DataFrames, Random, OnlineStats
+using CSV, OnlineStats, DataFrames
 
-
-struct CityStats{T,I}
-    mean::T
-    std::T
-    nsampled::I
-end
-
-@inline function update(cs::CityStats, new_data)
-    new_nsampled = cs.nsampled + 1
-
-    new_mean = cs.mean
-    new_mean += (new_data - cs.mean) / new_nsampled
-
-    new_std = cs.std
-    new_std += ((new_data - cs.mean) * (new_data - new_mean) - cs.std)
-    new_std /= new_nsampled
-
-    return CityStats(new_mean, new_std, new_nsampled)
-end
+const ST{G} = Series{Number,Tuple{Mean{G,EqualWeight},Variance{G,G,EqualWeight}}}
 
 @inline function newstats(T)
-    return CityStats{T,Int}(0, 0, 1)
+    return Series(Mean(T), Variance(T))
 end
 
 function (@main)(_)
-    rows = CSV.Rows("mystats.csv", header=[:city, :temperature], delim=';', types=[String, Float64])
 
-    records = Dict{String,CityStats{Float64,Int}}()
+    # rows = CSV.Chunks("mystats.csv"; header=[:city, :temperature], delim=';', types=[String, Float64])
+    chunks = CSV.Chunks("mystats.csv", header=[:city, :temperature], delim=';', types=[String, Float64],
+        ntasks=1000)
 
-    rowi = 0
-    for row in rows
-        (; city, temperature) = row
-        rowi += 1
-        if mod(rowi, 1000000) == 0
-            @info "$rowi rows done"
+
+    ch = Channel(Threads.nthreads()) do c
+        foreach(chunk -> put!(c, chunk), chunks)
+        while true
+            put!(c, nothing)
         end
-
-        # @assert city isa AbstractString "$city"
-        # @assert temperature isa AbstractFloat "$temperature"
-
-        records[city] = update(get(records, city, newstats(Float64)), temperature)
-        # records[city] = if haskey(records, city)
-        #     update(records[city], temperature)
-        # else
-        #     newstats(temperature)
-        # end
     end
 
-    for (city, cs) in records
-        println(join((city, cs.mean, cs.std, cs.nsampled), ';'))
+    tsks = map(1:Threads.nthreads()) do _
+        Threads.@spawn begin
+            records = Dict{String,ST{Float64}}()
+            while true
+                chunk = take!(ch)
+                isnothing(chunk) && break
+
+                df = DataFrame(chunk)
+                # @info "Chuck Data" size=nrow(df)
+
+                for gdf in groupby(df, :city)
+                    city = first(gdf.city)
+                    if !haskey(records, city)
+                        records[city] = newstats(Float64)
+                    end
+                    fit!(records[city], gdf.temperature)
+                end
+            end
+            records
+        end
+    end
+
+    total_records = Dict{String,ST{Float64}}()
+    for tsk in tsks
+        mergewith!(merge!, total_records, fetch(tsk))
+    end
+
+
+    for r in total_records
+        println(r)
     end
 end
